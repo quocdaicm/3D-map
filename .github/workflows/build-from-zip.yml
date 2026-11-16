@@ -1,27 +1,18 @@
-name: Build iOS (IPA chưa ký) từ file zip
+name: Build iOS
 
-# Tải nguyên file .zip (project) vào thư mục inbox/ hoặc thư mục gốc của repo.
-# GitHub tự giải nén rồi build. Cũng có thể chạy tay: tab Actions > Run workflow (dùng zip mới nhất).
 on:
   push:
-    paths:
-      - 'inbox/*.zip'
-      - '*.zip'
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
-      - name: Giải nén zip
+      - name: Giải nén zip dự án
         run: |
           set -e
           ZIP=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD 2>/dev/null | grep -E '^(inbox/)?[^/]+\.zip$' | head -1 || true)
@@ -34,8 +25,7 @@ jobs:
           fi
           echo "Dùng file: $ZIP"
           rm -rf _src && mkdir _src
-          unzip -q "$ZIP" -x '__MACOSX/*' '*.DS_Store' -d _src
-          # Nếu zip chỉ có đúng một thư mục gốc thì đi vào trong
+          unzip -q "$ZIP" -x '__MACOSX/*' '*.DS_Store' -d _src || true
           SRC=_src
           while [ "$(ls -A "$SRC" | wc -l | tr -d ' ')" = "1" ] && [ -d "$SRC/$(ls -A "$SRC")" ]; do
             SRC="$SRC/$(ls -A "$SRC")"
@@ -43,56 +33,45 @@ jobs:
           echo "Thư mục project: $SRC"
           echo "SRC=$SRC" >> "$GITHUB_ENV"
 
-      - name: Cache SwiftPM
-        uses: actions/cache@v4
+      - uses: actions/setup-node@v4
         with:
-          path: ${{ env.SRC }}/build/SourcePackages
-          key: spm-${{ runner.os }}-${{ hashFiles('_src/**/Package.resolved') }}
-          restore-keys: spm-${{ runner.os }}-
+          node-version: 20
 
-      - name: Cài XcodeGen
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: 1
-          HOMEBREW_NO_INSTALL_CLEANUP: 1
-          HOMEBREW_NO_ANALYTICS: 1
-        run: brew install xcodegen
+      - name: Cài thư viện và build web
+        working-directory: ${{ env.SRC }}
+        run: |
+          npm install
+          npm run build
 
-      - name: Build (không ký)
+      - name: Tạo project iOS (Capacitor)
+        working-directory: ${{ env.SRC }}
+        run: |
+          npx cap add ios
+          PLIST=ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Map3D" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST" || true
+          cp resources/icon.png ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png
+          npx cap sync ios
+
+      - name: Build .ipa chưa ký
+        working-directory: ${{ env.SRC }}/ios/App
         run: |
           set -eo pipefail
           mkdir -p "$GITHUB_WORKSPACE/out"
-          cd "$SRC"
-          if [ -f project.yml ]; then xcodegen generate; fi
-          PROJ=$(ls -d *.xcodeproj 2>/dev/null | head -1 || true)
-          if [ -z "$PROJ" ]; then
-            echo "Không thấy .xcodeproj hoặc project.yml trong zip"
-            exit 1
-          fi
-          SCHEME=$(xcodebuild -list -project "$PROJ" -json | python3 -c "import sys,json; print(json.load(sys.stdin)['project']['schemes'][0])")
-          echo "Scheme: $SCHEME"
-          xcodebuild \
-            -project "$PROJ" \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -sdk iphoneos \
+          xcodebuild -workspace App.xcworkspace -scheme App \
+            -configuration Release -sdk iphoneos \
             -destination 'generic/platform=iOS' \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            build 2>&1 | tee "$GITHUB_WORKSPACE/out/build.log"
-          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
-          mkdir -p Payload
-          cp -R "$APP" Payload/
-          zip -qr "$GITHUB_WORKSPACE/out/$SCHEME.ipa" Payload
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            archive 2>&1 | tee "$GITHUB_WORKSPACE/out/build.log"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$RUNNER_TEMP/App.xcarchive/Products/Applications/App.app" "$RUNNER_TEMP/Payload/"
+          cd "$RUNNER_TEMP" && zip -qr "$GITHUB_WORKSPACE/out/Map3D.ipa" Payload
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: ipa
-          path: out/*.ipa
-
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: build-log
-          path: out/build.log
+          name: build-output
+          path: out/
+          if-no-files-found: warn
