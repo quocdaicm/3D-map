@@ -46,13 +46,7 @@ jobs:
       - name: Tạo project iOS (Capacitor)
         working-directory: ${{ env.SRC }}
         run: |
-          npx cap add ios
-          PLIST=ios/App/App/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Map3D" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST" || true
-          /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST" || true
-          cp resources/icon.png ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png
-          npx cap sync ios
+          bash scripts/ios-setup.sh
 
       - name: Build .ipa chưa ký
         working-directory: ${{ env.SRC }}/ios/App
